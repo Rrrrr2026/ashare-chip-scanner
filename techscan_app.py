@@ -7,6 +7,7 @@ techscan_app.py — 科技股板块筹码扫描器 · 交互式仪表盘（Strea
 数据：  读 techscan_data/*.parquet（先跑 python techscan_build.py 生成）。
 """
 import os
+import urllib.parse
 
 import numpy as np
 import pandas as pd
@@ -41,6 +42,12 @@ def board_of(code):
     if c[0] in ("6", "0"):
         return "主板"
     return "其他"
+
+
+def gsearch_url(code, name):
+    """Google 搜索该公司主营业务 / 营收占比（触发 Google AI 概览）。"""
+    q = urllib.parse.quote(f"{name} {code} 主营业务 营收构成 占比")
+    return f"https://www.google.com/search?q={q}"
 
 
 # 一键预设（在结果表内套用筛选+排序；行业/上市板侧栏筛选仍生效，象限由预设指定）
@@ -201,7 +208,9 @@ def render_stock_preview(code, key_prefix):
         st.warning("该股不在当前数据中。")
         return
     r = row.iloc[0]
-    st.markdown(f"#### 📌 {code} {r['名称']}　·　{r.get('行业', '')}　·　{r.get('上市板', '')}　|　{r.get('象限', '')}")
+    hc1, hc2 = st.columns([3, 1])
+    hc1.markdown(f"#### 📌 {code} {r['名称']}　·　{r.get('行业', '')}　·　{r.get('上市板', '')}　|　{r.get('象限', '')}")
+    hc2.link_button("🔍 Google 主营/营收占比", gsearch_url(code, r["名称"]), use_container_width=True)
 
     with st.spinner("加载个股明细…"):
         # K 线 + 均线
@@ -424,8 +433,9 @@ with tab2:
         ascending = [c in asc_cols for c in sort_cols]
         tbl = tbl.sort_values(by=sort_cols, ascending=ascending, na_position="last")
     tbl = tbl.reset_index(drop=True)
+    tbl["🔍业务"] = [gsearch_url(c, n) for c, n in zip(tbl["代码"], tbl["名称"])]
     prio = " → ".join(f"{c}{'↑' if c in asc_cols else '↓'}" for c in sort_cols) or "（无）"
-    st.caption(f"筛选后 {len(tbl)} 只 · 排序优先级：{prio}")
+    st.caption(f"筛选后 {len(tbl)} 只 · 排序优先级：{prio} · 点🔍业务列一键 Google 该公司主营/营收占比")
     tbl_ev = st.dataframe(
         tbl, use_container_width=True, height=480, hide_index=True,
         on_select="rerun", selection_mode="single-row", key="tbl_sel",
@@ -434,6 +444,7 @@ with tab2:
             "pe_ttm": st.column_config.NumberColumn("PE(TTM)", format="%.1f"),
             "mktcap": st.column_config.NumberColumn("总市值(亿)", format="%.0f"),
             "pb": st.column_config.NumberColumn("PB", format="%.2f"),
+            "🔍业务": st.column_config.LinkColumn("🔍业务", display_text="搜业务"),
         },
     )
     try:
@@ -454,8 +465,12 @@ with tab3:
         st.info("无价格缓存，无法画个股筹码图。")
     else:
         names = (f["代码"] + " " + f["名称"]).tolist() or (view["代码"] + " " + view["名称"]).tolist()
-        pick = st.selectbox("选择个股", names)
+        psel, pbtn = st.columns([3, 1])
+        pick = psel.selectbox("选择个股", names)
         code = pick.split()[0]
+        _nm = pick.split(maxsplit=1)[1] if len(pick.split(maxsplit=1)) > 1 else code
+        pbtn.markdown("<div style='height:1.7em'></div>", unsafe_allow_html=True)
+        pbtn.link_button("🔍 Google 主营/营收占比", gsearch_url(code, _nm), use_container_width=True)
         pdf = prices[prices["代码"] == code].sort_values("date")
         if not len(pdf):
             st.warning("该票无价格数据。")
@@ -561,6 +576,15 @@ with tab4:
                                title=f"按{dim}着色的四象限分布", margin=dict(l=10, r=10, t=40, b=10))
         st.plotly_chart(fig_heat, use_container_width=True)
 
+        # 选股 → 一键 Google 主营/营收占比
+        s4a, s4b = st.columns([3, 1])
+        opts4 = (g["代码"] + " " + g["名称"]).tolist()
+        if opts4:
+            pk4 = s4a.selectbox("选一只看主营业务", opts4, key="g_sel_tab4")
+            c4 = pk4.split()[0]; n4 = pk4.split(maxsplit=1)[1] if len(pk4.split(maxsplit=1)) > 1 else c4
+            s4b.markdown("<div style='height:1.7em'></div>", unsafe_allow_html=True)
+            s4b.link_button("🔍 Google 主营/营收占比", gsearch_url(c4, n4), use_container_width=True)
+
 # ----------------------------- Tab5 成本低于现价分布 ----------------------------- #
 with tab5:
     st.markdown("#### 平均成本低于现价的幅度分布（浮盈安全垫）")
@@ -615,9 +639,12 @@ with tab5:
     cols5 = [c for c in ["代码", "名称", "行业", "区间", "低于现价%", "现价", "平均成本",
                          "溢价%", "综合分", "获利%", "集中度", "pe_ttm"] if c in prof.columns]
     detail = prof[cols5].sort_values("低于现价%", ascending=False).reset_index(drop=True)
+    detail_csv = detail.copy()
+    detail["🔍业务"] = [gsearch_url(c, n) for c, n in zip(detail["代码"], detail["名称"])]
     st.dataframe(detail, use_container_width=True, height=420, hide_index=True,
-                 column_config={"pe_ttm": st.column_config.NumberColumn("PE(TTM)", format="%.1f")})
-    st.download_button("⬇️ 导出浮盈明细 CSV", detail.to_csv(index=False).encode("utf-8-sig"),
+                 column_config={"pe_ttm": st.column_config.NumberColumn("PE(TTM)", format="%.1f"),
+                                "🔍业务": st.column_config.LinkColumn("🔍业务", display_text="搜业务")})
+    st.download_button("⬇️ 导出浮盈明细 CSV", detail_csv.to_csv(index=False).encode("utf-8-sig"),
                        file_name="cost_below_price.csv", mime="text/csv")
     with st.expander(f"套牢股票（平均成本≥现价）· {len(trapped)} 只"):
         tcols = [c for c in ["代码", "名称", "行业", "低于现价%", "现价", "平均成本", "溢价%", "综合分"] if c in trapped.columns]
