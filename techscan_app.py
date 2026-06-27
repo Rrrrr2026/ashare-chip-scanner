@@ -333,18 +333,30 @@ with tab1:
                           marker=dict(line=dict(width=0.8, color="rgba(0,0,0,0.5)")))
         fig.add_hline(y=p_thr, line_color="#888", line_width=1)
         fig.add_vline(x=h_thr, line_color="#888", line_width=1)
-        xr = [plot_df["户数环比%"].min() - 3, plot_df["户数环比%"].max() + 3]
+        # 横轴(户数环比%)对极端次新股做稳健裁剪：少数 +几万% 会把主群压成一条竖线
+        xs = pd.to_numeric(plot_df["户数环比%"], errors="coerce")
+        xlo = max(float(np.nanpercentile(xs, 1)), -60.0)
+        xhi = min(float(np.nanpercentile(xs, 99)), 80.0)
+        if not (np.isfinite(xlo) and np.isfinite(xhi)) or xlo >= xhi:
+            xlo, xhi = -40.0, 40.0
+        xpad = (xhi - xlo) * 0.06 + 1.0
+        xr = [xlo - xpad, xhi + xpad]
         yr = [plot_df["溢价%"].min() - 3, plot_df["溢价%"].max() + 3]
+        n_out = int((xs < xr[0]).sum() + (xs > xr[1]).sum())
         ann = [("强势控盘", xr[0], yr[1], "#2ca02c"), ("低位吸筹/筑底", xr[0], yr[0], "#1f77b4"),
                ("高位追高派发", xr[1], yr[1], "#ff7f0e"), ("套牢派发", xr[1], yr[0], "#d62728")]
         for txt, x, y, col in ann:
             fig.add_annotation(x=x, y=y, text=txt, showarrow=False,
                                font=dict(color=col, size=13), opacity=0.55,
                                xanchor="left" if x == xr[0] else "right")
+        fig.update_xaxes(range=xr)
         fig.update_layout(height=640, template="plotly_white",
                           margin=dict(l=10, r=10, t=30, b=10), clickmode="event+select")
         ev = st.plotly_chart(fig, use_container_width=True, on_select="rerun", key="quad_sel")
-        st.caption("🖱️ 悬停看简要 · **点击圆球**在下方钉住该股 K线+详情 · 框选/滚轮缩放 · 双击复位")
+        cap = "🖱️ 悬停看简要 · **点击圆球**在下方钉住该股 K线+详情 · 框选/滚轮缩放 · 双击复位"
+        if n_out:
+            cap += f"　|　已裁剪 {n_out} 只户数环比极端的次新股(超出视图,可在结果表查看)"
+        st.caption(cap)
         picked = _selected_from_plotly(ev, plot_df)
         if picked:
             st.session_state["sel_code"] = picked
@@ -541,6 +553,10 @@ with tab4:
             labels={"户数环比%": "户数环比 %  (←左=户数降)", "溢价%": "溢价 %  (↑上=浮盈)"},
         )
         fig_heat.add_hline(y=p_thr, line_color="#888"); fig_heat.add_vline(x=h_thr, line_color="#888")
+        _xs = pd.to_numeric(sub["户数环比%"], errors="coerce")
+        _xlo, _xhi = max(float(np.nanpercentile(_xs, 1)), -60.0), min(float(np.nanpercentile(_xs, 99)), 80.0)
+        if np.isfinite(_xlo) and np.isfinite(_xhi) and _xlo < _xhi:
+            fig_heat.update_xaxes(range=[_xlo - 3, _xhi + 3])
         fig_heat.update_layout(height=520, template="plotly_white",
                                title=f"按{dim}着色的四象限分布", margin=dict(l=10, r=10, t=40, b=10))
         st.plotly_chart(fig_heat, use_container_width=True)
