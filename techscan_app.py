@@ -199,6 +199,71 @@ def load_northbound(code):
     return d, dcol, pcol
 
 
+@st.cache_data(show_spinner=False)
+def load_business(code):
+    """主营业务文字(同花顺) + 主营构成/营收占比(东财)。"""
+    import akshare as ak
+    biz = {"主营业务": "", "产品类型": "", "经营范围": ""}
+    try:
+        d = ak.stock_zyjs_ths(symbol=code)
+        if d is not None and len(d):
+            r = d.iloc[0]
+            for k in biz:
+                biz[k] = str(r.get(k, "") or "")
+    except Exception:
+        pass
+    comp = None
+    try:
+        z = ak.stock_zygc_em(symbol=_sina_symbol(code).upper())
+        if z is not None and len(z):
+            z = z[z["报告日期"] == z["报告日期"].max()]
+            for typ in ["按产品分类", "按行业分类", "按地区分类"]:
+                sub = z[z["分类类型"] == typ]
+                if len(sub) >= 2:
+                    comp = sub.copy()
+                    break
+            if comp is None:
+                comp = z.copy()
+    except Exception:
+        pass
+    return biz, comp
+
+
+def render_business_panel(code, name, key_prefix):
+    """内嵌显示：主营业务 + 营收占比(图+表) + 雪球/同花顺跳转。"""
+    xq = "https://xueqiu.com/S/" + _sina_symbol(code).upper()
+    ths = f"http://basic.10jqka.com.cn/{code}/operate.html"
+    bb1, bb2 = st.columns(2)
+    bb1.link_button("🌐 雪球行情", xq, use_container_width=True)
+    bb2.link_button("🌐 同花顺F10·经营分析", ths, use_container_width=True)
+    with st.spinner("加载公司业务 / 营收占比…"):
+        biz, comp = load_business(code)
+    if biz.get("主营业务"):
+        st.markdown(f"**主营业务**：{biz['主营业务']}")
+    if biz.get("产品类型"):
+        st.caption(f"产品/板块：{biz['产品类型']}")
+    if comp is not None and len(comp):
+        c = comp.copy()
+        c["营收占比%"] = (pd.to_numeric(c["收入比例"], errors="coerce") * 100).round(1)
+        c["毛利率%"] = (pd.to_numeric(c["毛利率"], errors="coerce") * 100).round(1)
+        c = c.sort_values("营收占比%", ascending=False)
+        typ = str(c["分类类型"].iloc[0]) if "分类类型" in c.columns else ""
+        rep = str(c["报告日期"].iloc[0])[:10] if "报告日期" in c.columns else ""
+        bc, bt = st.columns([2, 1])
+        with bc:
+            fig = go.Figure(go.Bar(x=c["主营构成"], y=c["营收占比%"], marker_color="#1f77b4",
+                                   text=c["营收占比%"], textposition="outside"))
+            fig.update_layout(height=300, template="plotly_white",
+                              title=f"营收占比（{typ} · {rep}）", yaxis_title="%",
+                              margin=dict(l=10, r=10, t=40, b=10))
+            st.plotly_chart(fig, use_container_width=True, key=f"biz_{key_prefix}_{code}")
+        with bt:
+            st.dataframe(c[["主营构成", "营收占比%", "毛利率%"]],
+                         use_container_width=True, hide_index=True)
+    else:
+        st.caption("（未取到主营构成数据，可点上方雪球/同花顺查看）")
+
+
 def render_stock_preview(code, key_prefix):
     if not code:
         st.info("👆 点击上方的圆球 / 表格行，这里会显示该股的 K 线预览与详情。")
@@ -208,9 +273,9 @@ def render_stock_preview(code, key_prefix):
         st.warning("该股不在当前数据中。")
         return
     r = row.iloc[0]
-    hc1, hc2 = st.columns([3, 1])
-    hc1.markdown(f"#### 📌 {code} {r['名称']}　·　{r.get('行业', '')}　·　{r.get('上市板', '')}　|　{r.get('象限', '')}")
-    hc2.link_button("🔍 Google 主营/营收占比", gsearch_url(code, r["名称"]), use_container_width=True)
+    st.markdown(f"#### 📌 {code} {r['名称']}　·　{r.get('行业', '')}　·　{r.get('上市板', '')}　|　{r.get('象限', '')}")
+    with st.expander("📋 主营业务 / 营收占比　+　雪球·同花顺", expanded=True):
+        render_business_panel(code, r["名称"], key_prefix)
 
     with st.spinner("加载个股明细…"):
         # K 线 + 均线
@@ -433,9 +498,8 @@ with tab2:
         ascending = [c in asc_cols for c in sort_cols]
         tbl = tbl.sort_values(by=sort_cols, ascending=ascending, na_position="last")
     tbl = tbl.reset_index(drop=True)
-    tbl["🔍业务"] = [gsearch_url(c, n) for c, n in zip(tbl["代码"], tbl["名称"])]
     prio = " → ".join(f"{c}{'↑' if c in asc_cols else '↓'}" for c in sort_cols) or "（无）"
-    st.caption(f"筛选后 {len(tbl)} 只 · 排序优先级：{prio} · 点🔍业务列一键 Google 该公司主营/营收占比")
+    st.caption(f"筛选后 {len(tbl)} 只 · 排序优先级：{prio} · **点某一行**在下方看该股主营/营收占比")
     tbl_ev = st.dataframe(
         tbl, use_container_width=True, height=480, hide_index=True,
         on_select="rerun", selection_mode="single-row", key="tbl_sel",
@@ -444,7 +508,6 @@ with tab2:
             "pe_ttm": st.column_config.NumberColumn("PE(TTM)", format="%.1f"),
             "mktcap": st.column_config.NumberColumn("总市值(亿)", format="%.0f"),
             "pb": st.column_config.NumberColumn("PB", format="%.2f"),
-            "🔍业务": st.column_config.LinkColumn("🔍业务", display_text="搜业务"),
         },
     )
     try:
@@ -465,12 +528,9 @@ with tab3:
         st.info("无价格缓存，无法画个股筹码图。")
     else:
         names = (f["代码"] + " " + f["名称"]).tolist() or (view["代码"] + " " + view["名称"]).tolist()
-        psel, pbtn = st.columns([3, 1])
-        pick = psel.selectbox("选择个股", names)
+        pick = st.selectbox("选择个股", names)
         code = pick.split()[0]
         _nm = pick.split(maxsplit=1)[1] if len(pick.split(maxsplit=1)) > 1 else code
-        pbtn.markdown("<div style='height:1.7em'></div>", unsafe_allow_html=True)
-        pbtn.link_button("🔍 Google 主营/营收占比", gsearch_url(code, _nm), use_container_width=True)
         pdf = prices[prices["代码"] == code].sort_values("date")
         if not len(pdf):
             st.warning("该票无价格数据。")
@@ -509,6 +569,8 @@ with tab3:
                     st.metric("户数环比", f"{r0['户数环比%']}%")
                     st.metric("吸筹分 / 综合分", f"{r0['吸筹分']} / {r0['综合分']}")
                     st.metric("PE(TTM) / PB", f"{r0.get('pe_ttm', np.nan):.1f} / {r0.get('pb', np.nan):.2f}")
+            st.markdown("##### 📋 主营业务 / 营收占比")
+            render_business_panel(code, _nm, key_prefix="tab3")
 
 # ----------------------------- Tab4 各行业筹码冷热 ----------------------------- #
 with tab4:
@@ -576,14 +638,12 @@ with tab4:
                                title=f"按{dim}着色的四象限分布", margin=dict(l=10, r=10, t=40, b=10))
         st.plotly_chart(fig_heat, use_container_width=True)
 
-        # 选股 → 一键 Google 主营/营收占比
-        s4a, s4b = st.columns([3, 1])
+        # 选股 → 内嵌主营/营收占比 + 雪球/同花顺
         opts4 = (g["代码"] + " " + g["名称"]).tolist()
         if opts4:
-            pk4 = s4a.selectbox("选一只看主营业务", opts4, key="g_sel_tab4")
+            pk4 = st.selectbox("选一只看主营业务 / 营收占比", opts4, key="g_sel_tab4")
             c4 = pk4.split()[0]; n4 = pk4.split(maxsplit=1)[1] if len(pk4.split(maxsplit=1)) > 1 else c4
-            s4b.markdown("<div style='height:1.7em'></div>", unsafe_allow_html=True)
-            s4b.link_button("🔍 Google 主营/营收占比", gsearch_url(c4, n4), use_container_width=True)
+            render_business_panel(c4, n4, key_prefix="tab4")
 
 # ----------------------------- Tab5 成本低于现价分布 ----------------------------- #
 with tab5:
@@ -639,13 +699,15 @@ with tab5:
     cols5 = [c for c in ["代码", "名称", "行业", "区间", "低于现价%", "现价", "平均成本",
                          "溢价%", "综合分", "获利%", "集中度", "pe_ttm"] if c in prof.columns]
     detail = prof[cols5].sort_values("低于现价%", ascending=False).reset_index(drop=True)
-    detail_csv = detail.copy()
-    detail["🔍业务"] = [gsearch_url(c, n) for c, n in zip(detail["代码"], detail["名称"])]
     st.dataframe(detail, use_container_width=True, height=420, hide_index=True,
-                 column_config={"pe_ttm": st.column_config.NumberColumn("PE(TTM)", format="%.1f"),
-                                "🔍业务": st.column_config.LinkColumn("🔍业务", display_text="搜业务")})
-    st.download_button("⬇️ 导出浮盈明细 CSV", detail_csv.to_csv(index=False).encode("utf-8-sig"),
+                 column_config={"pe_ttm": st.column_config.NumberColumn("PE(TTM)", format="%.1f")})
+    st.download_button("⬇️ 导出浮盈明细 CSV", detail.to_csv(index=False).encode("utf-8-sig"),
                        file_name="cost_below_price.csv", mime="text/csv")
+    opts5 = (detail["代码"] + " " + detail["名称"]).tolist()
+    if opts5:
+        pk5 = st.selectbox("选一只看主营业务 / 营收占比", opts5, key="g_sel_tab5")
+        c5 = pk5.split()[0]; n5 = pk5.split(maxsplit=1)[1] if len(pk5.split(maxsplit=1)) > 1 else c5
+        render_business_panel(c5, n5, key_prefix="tab5")
     with st.expander(f"套牢股票（平均成本≥现价）· {len(trapped)} 只"):
         tcols = [c for c in ["代码", "名称", "行业", "低于现价%", "现价", "平均成本", "溢价%", "综合分"] if c in trapped.columns]
         st.dataframe(trapped[tcols].sort_values("低于现价%").reset_index(drop=True),
