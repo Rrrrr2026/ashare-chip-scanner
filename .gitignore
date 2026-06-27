@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 图表 / 一次性分析输出（不入库）
+*.png
+sector_scan.csv
+screen_cheap_controlled*.csv
+techscan_result.csv
+cost_below_price.csv
+
+# 机器特定启动脚本（含本机绝对路径，桌面快捷方式用，不入库）
+run_techscan.bat
+
+# Streamlit / 临时
+.streamlit/secrets.toml
+.DS_Store
+Thumbs.db
+*.log
